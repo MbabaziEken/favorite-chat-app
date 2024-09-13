@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat</title>
+    <link rel="stylesheet" href="/styles/style.css">
+</head>
+<body style="background-color: beige;">
+    <h1>Chat Room</h1>
+
+    <!-- Chat box for displaying messages -->
+    <div id="chat-box">
+        <% messages.forEach(message => { %>
+            <div class="message <%= message.sender._id === user._id ? 'sender' : 'receiver' %>">
+                <% if (message.type === 'text') { %>
+                    <p><%= message.content %></p>
+                <% } else if (message.type === 'voice') { %>
+                    <audio controls>
+                        <source src="<%= message.content %>" type="audio/mpeg">
+                    </audio>
+                <% } %>
+            </div>
+        <% }) %>
+    </div>
+
+    <!-- Avatar upload form -->
+    <form action="/chat/upload-avatar" method="post" enctype="multipart/form-data">
+        <input type="file" name="avatar" accept="image/*" required>
+        <button type="submit">Upload Avatar</button>
+    </form>
+
+    <h1>Chat Room with Calls</h1>
+
+    <!-- Button to start a call -->
+    <button id="start-call">Start Call</button>
+
+    <!-- Local video -->
+    <video id="local-video" autoplay muted></video>
+
+    <!-- Remote video -->
+    <video id="remote-video" autoplay></video>
+
+    <!-- Socket.io and WebRTC JavaScript code -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io(); // Connecting to the signaling server
+
+        const localVideo = document.getElementById('local-video');
+        const remoteVideo = document.getElementById('remote-video');
+        const startCallButton = document.getElementById('start-call');
+
+        let localStream;
+        let peerConnection;
+
+        const iceServers = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' }
+            ]
+        };
+
+        // Event listener for the "Start Call" button
+        startCallButton.addEventListener('click', async () => {
+            try {
+                // Getting local media stream (video/audio)
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+
+                // Creating RTCPeerConnection for the WebRTC session
+                peerConnection = new RTCPeerConnection(iceServers);
+
+                // Adding local media stream tracks to the peer connection
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                // Creating an offer and set it as the local description
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                // Sending the offer to the other peer via Socket.io
+                socket.emit('offer', offer);
+            } catch (err) {
+                console.error('Error starting the call:', err);
+            }
+        });
+
+        // receiving an offer from another peer
+        socket.on('offer', async (offer) => {
+            try {
+                // Creating peer connection for the callee
+                peerConnection = new RTCPeerConnection(iceServers);
+
+                // Getting local media stream for the callee (the one receiving the offer)
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+
+                // Adding the local tracks to the peer connection
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                //  the remote description
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+
+                //  local description
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                // answer back to the caller via Socket.io
+                socket.emit('answer', answer);
+            } catch (err) {
+                console.error('Error receiving the offer:', err);
+            }
+        });
+
+        //  receiving an answer from the callee
+        socket.on('answer', async (answer) => {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        });
+
+        //  the ICE candidate events to establish the connection
+        peerConnection.onicecandidate = event => {
+            if (event.candidate) {
+                socket.emit('ice-candidate', event.candidate);
+            }
+        };
+
+        //  receiving ICE candidates from the other peer
+        socket.on('ice-candidate', async (candidate) => {
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (err) {
+                console.error('Error adding received ICE candidate:', err);
+            }
+        });
+
+        // stream on the remote video element
+        peerConnection.ontrack = (event) => {
+            remoteVideo.srcObject = event.streams[0];
+        };
+    </script>
+
+</body>
+</html>
